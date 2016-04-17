@@ -55,7 +55,8 @@ import gae_handler
 import direct_handler
 from connect_control import touch_active
 import web_control
-
+import need_proxy_http
+import zlib
 
 class GAEProxyHandler(simple_http_server.HttpServerHandler):
     gae_support_methods = tuple(["GET", "POST", "HEAD", "PUT", "DELETE", "PATCH"])
@@ -86,10 +87,15 @@ class GAEProxyHandler(simple_http_server.HttpServerHandler):
         we forward it to localhost.
         """
         host = self.headers.get('Host', '')
-        host_ip, _, port = host.rpartition(':')
+        host_ip = host
+        port = 80
+        if ':' in host:
+            host_ip, _, port = host.rpartition(':')
         http_client = simple_http_client.HTTP_client((host_ip, int(port)))
 
         request_headers = dict((k.title(), v) for k, v in self.headers.items())
+        if request_headers.has_key('Accept-Encoding'):
+            del request_headers['Accept-Encoding']
         payload = b''
         if 'Content-Length' in request_headers:
             try:
@@ -111,12 +117,21 @@ class GAEProxyHandler(simple_http_server.HttpServerHandler):
 
         out_list = []
         out_list.append("HTTP/1.1 %d\r\n" % status)
+        flag = False
         for key, value in response.getheaders():
+            if key.lower()=='transfer-encoding':
+                continue
+            if key.lower()=='content-encoding':
+                continue
             key = key.title()
             out_list.append("%s: %s\r\n" % (key, value))
+            if key.lower()=='content-length':
+                flag = True
+        if not flag:
+            out_list.append("%s: %s\r\n" % ('Content-Length', len(content)))
         out_list.append("\r\n")
         out_list.append(content)
-
+        
         self.wfile.write("".join(out_list))
 
     def do_METHOD(self):
@@ -141,10 +156,16 @@ class GAEProxyHandler(simple_http_server.HttpServerHandler):
         elif not host and '://' in self.path:
             host = urlparse.urlparse(self.path).netloc
 
+        
         if host.startswith("127.0.0.1") or host.startswith("localhost"):
             #xlog.warn("Your browser forward localhost to proxy.")
             return self.forward_local()
-
+        
+        go_proxy = need_proxy_http.proxy(host)
+        if not go_proxy:
+            xlog.debug("[NOT PROXY]%s", self.path)
+            return self.forward_local()
+            
         if host_ip in socket.gethostbyname_ex(socket.gethostname())[-1]:
             xlog.info("Browse localhost by proxy")
             return self.forward_local()
